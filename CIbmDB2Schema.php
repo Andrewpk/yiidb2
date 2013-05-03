@@ -4,7 +4,12 @@
  * CIbmDB2Schema class file.
  *
  * @author Edgard L. Messias <edgardmessias@gmail.com>
+ * @author Andrew Kehrig <me@andrewkehrig.com>
  * @link https://github.com/edgardmessias/yiidb2
+ * 
+ * 2013-05-01 - Andrew Kehrig - Added the ability to use an iSeries(as/400) 
+ * instance of DB2 rather than just the UNIX/Linux/Windows editions that were 
+ * originally supported by this extension.
  */
 
 /**
@@ -33,7 +38,7 @@ class CIbmDB2Schema extends CDbSchema {
         'boolean' => 'SMALLINT',
         'money' => 'DECIMAL(19,4)',
     );
-
+    
     /**
      * Loads the metadata for the specified table.
      * @param string $name table name
@@ -94,8 +99,28 @@ class CIbmDB2Schema extends CDbSchema {
      * @return boolean whether the table exists in the database
      */
     protected function findColumns($table) {
-
-        $sql = <<<EOD
+        if(
+            !empty(Yii::app()->params['yiidb2']['systemServer']) &&
+            Yii::app()->params['yiidb2']['systemServer'] === 'as400'
+            )
+        {
+            $sql = <<<ENDSQL
+SELECT LOWER(COLUMN_NAME) as colname,
+       ORDINAL_POSITION as colno,
+       DATA_TYPE as typename,
+       CAST(COLUMN_DEFAULT AS VARCHAR(254)) AS default,
+       IS_NULLABLE as nulls,
+       LENGTH as length,
+       NUMERIC_SCALE as scale,
+       IS_IDENTITY as identity
+FROM QSYS2.SYSCOLUMNS
+WHERE TABLE_NAME = UPPER(:table)
+ORDER BY ORDINAL_POSITION
+ENDSQL;
+        }
+        else
+        {
+            $sql = <<<EOD
 SELECT LOWER(colname) AS colname,
        colno,
        typename,
@@ -108,6 +133,7 @@ FROM syscat.columns
 WHERE UPPER(tabname) = :table
 ORDER BY colno
 EOD;
+        }
 
         $command = $this->getDbConnection()->createCommand($sql);
         $command->bindValue(':table', strtoupper($table->name));
@@ -158,15 +184,34 @@ EOD;
      * @param CIbmDB2TableSchema $table the table metadata
      */
     protected function findPrimaryKey($table) {
-        $sql = <<<EOD
+        if(
+            !empty(Yii::app()->params['yiidb2']['systemServer']) &&
+            Yii::app()->params['yiidb2']['systemServer'] === 'as400'
+          )
+        {
+            //Once again - does not account for schema
+            $sql = <<<ENDSQL
+SELECT LOWER(COLUMN_NAME) As colnames FROM QSYS2.SYSCST 
+INNER JOIN QSYS2.SYSKEYCST
+  ON QSYS2.SYSCST.CONSTRAINT_NAME = QSYS2.SYSKEYCST.CONSTRAINT_NAME AND
+  QSYS2.SYSCST.TABLE_SCHEMA = QSYS2.SYSKEYCST.TABLE_SCHEMA AND
+  QSYS2.SYSCST.TABLE_NAME = QSYS2.SYSKEYCST.TABLE_NAME
+WHERE QSYS2.SYSCST.CONSTRAINT_TYPE = 'PRIMARY KEY'
+    AND QSYS2.SYSCST.TABLE_NAME = :table
+ENDSQL;
+        }
+        else
+        {
+            $sql = <<<EOD
 SELECT LOWER(colnames) AS colnames
 FROM syscat.indexes
 WHERE uniquerule = 'P'
   AND UPPER(tabname) = :table
 EOD;
+        }
+
         $command = $this->getDbConnection()->createCommand($sql);
         $command->bindValue(':table', strtoupper($table->name));
-
         $indexes = $command->queryAll();
         foreach ($indexes as $index) {
             $columns = explode("+", ltrim($index['colnames'], '+'));
@@ -197,8 +242,36 @@ EOD;
      * @param CIbmDB2TableSchema $table the table metadata
      */
     protected function findForeignKey($table) {
-        $sql = <<<EOD
-SELECT 	LOWER(fk.colname) AS fkcolname,
+        if(
+            !empty(Yii::app()->params['yiidb2']['systemServer']) &&
+            Yii::app()->params['yiidb2']['systemServer'] === 'as400'
+          )
+        {
+            //This still doesn't account for $table's schema, or the schema of
+            //parent columns.
+            $sql = <<<ENDSQL
+SELECT 
+  LOWER(parent.TABLE_NAME) As pktabname,
+  LOWER(parent.COLUMN_NAME) As pkcolname,
+  LOWER(child.COLUMN_NAME) As fkcolname
+FROM
+  QSYS2.SYSKEYCST child
+    INNER JOIN QSYS2.SYSREFCST crossref ON
+      child.CONSTRAINT_SCHEMA = crossref.CONSTRAINT_SCHEMA AND
+      child.CONSTRAINT_NAME = crossref.CONSTRAINT_NAME
+    INNER JOIN QSYS2.SYSKEYCST parent ON
+      crossref.UNIQUE_CONSTRAINT_SCHEMA = parent.CONSTRAINT_SCHEMA AND
+      crossref.UNIQUE_CONSTRAINT_NAME = parent.CONSTRAINT_NAME
+    INNER JOIN QSYS2.SYSCST coninfo ON
+      child.CONSTRAINT_NAME = coninfo.CONSTRAINT_NAME
+WHERE UPPER(child.TABLE_NAME) = :table
+  AND coninfo.CONSTRAINT_TYPE = 'FOREIGN KEY'
+ENDSQL;
+        }
+        else
+        {
+            $sql = <<<EOD
+SELECT LOWER(fk.colname) AS fkcolname,
 	LOWER(pk.tabname) AS pktabname,
 	LOWER(pk.colname) AS pkcolname
 FROM syscat.references
@@ -206,6 +279,8 @@ INNER JOIN syscat.keycoluse AS fk ON fk.constname = syscat.references.constname
 INNER JOIN syscat.keycoluse AS pk ON pk.constname = syscat.references.refkeyname AND pk.colseq = fk.colseq
 WHERE UPPER(fk.tabname) = :table
 EOD;
+        }
+
         $command = $this->getDbConnection()->createCommand($sql);
         $command->bindValue(':table', strtoupper($table->name));
 
@@ -225,27 +300,56 @@ EOD;
      * @return array all table names in the database.
      */
     protected function findTableNames($schema = '') {
-        $sql = <<<EOD
+        if(
+            !empty(Yii::app()->params['yiidb2']['systemServer']) &&
+            Yii::app()->params['yiidb2']['systemServer'] === 'as400'
+          )
+        {
+            $sql = <<<ENDSQL
+SELECT LOWER(TABLE_NAME) as tabname
+FROM QSYS2.SYSTABLES
+WHERE TABLE_TYPE IN ('T','V')
+  AND SYSTEM_TABLE = 'N'
+ENDSQL;
+            if($schema !== '')
+                $sql .= <<<ENDSQL
+                
+  AND TABLE_SCHEMA = :schema
+ENDSQL;
+            $sql .= <<<ENDSQL
+                
+ORDER BY tabname
+ENDSQL;
+        }
+        else
+        {
+            
+            $sql = <<<EOD
 SELECT LOWER(tabname) AS tabname
 FROM syscat.tables
 WHERE type IN ('T', 'V')
   AND ownertype != 'S'
-
 EOD;
-        if ($schema !== '') {
+            
+            if ($schema !== '')
+            {
+                
+                $sql .= <<<EOD
+AND syscat.tables.tabschema=:schema
+EOD;
+                
+            }
+            
             $sql .= <<<EOD
-AND   syscat.tables.tabschema=:schema
-EOD;
-        }
-        $sql .= <<<EOD
 ORDER BY syscat.tables.tabname;
 EOD;
+            
+        }
         $command = $this->getDbConnection()->createCommand($sql);
         if ($schema !== '') {
             $command->bindParam(':schema', $schema);
         }
         return $command->queryColumn();
-        ;
     }
 
     /**

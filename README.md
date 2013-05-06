@@ -35,7 +35,18 @@ __For connecting to an iSeries DB2 (also known as as/400 DB2)__:
 
 * Make sure to add a `DATABASE=SCHEMA;` parameter to your ODBC connection string
   where `SCHEMA` == your schema that will contain tables used in your Yii 
-  models.
+  models. Here is an example `connectionString` for your `main.php` if you are
+  connecting to the iSeries DB2 database on a Windows server running your Yii 
+  application:
+  
+```php
+...
+'db' => array(
+      'connectionString' => 'odbc:Driver={Client Access ODBC Driver (32-bit)};System=PUTSERVERNAMEHERE;DATABASE=PUTSCHEMAHERE;UID=PUTUSERHERE;PWD=PUTPASSWORDHERE;',
+	  ),
+...
+```
+
 * In your `protected/config/main.php`, add the following under the `params` 
   section:
   
